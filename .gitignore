@@ -1,0 +1,95 @@
+# Node.js dependencies
+node_modules/
+
+# Python virtual environments
+venv/
+env/
+.venv/
+.env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.staging
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.sublime-workspace
+*.sublime-project
+
+# Build output
+dist/
+build/
+out/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+demo.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# PyCharm
+.idea/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# Package files
+*.egg-info/
+dist/
+build/
+*.wheel
+
+# Security and credentials
+config.ini
+secrets.json
+*.pem
+*.key
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# LangChain/LangGraph cache
+.langchain/
+.langgraph/
+
+# OpenAI API logs
+openai_logs/
+
