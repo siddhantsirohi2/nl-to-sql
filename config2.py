@@ -7,6 +7,6 @@ def load_config() -> dict:
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", 5432)),
         "user": os.getenv("DB_USER", "postgres"),
-        "password": os.getenv("DB_PASSWORD"),
+        "password": os.getenv("DB_PASSWORD", "siddhant"),
         "dbname": os.getenv("DB_NAME", "postgres"),  # Default DB
     }
