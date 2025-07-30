@@ -1,6 +1,7 @@
 from typing_extensions import TypedDict
-from typing import Annotated, List, Optional, Any
+from typing import Annotated, List, Optional, Any, Dict
 import os
+import uuid
 import psycopg2
 from psycopg2 import sql
 from dotenv import load_dotenv
@@ -9,10 +10,15 @@ from langchain.prompts import (
     ChatPromptTemplate,
     SystemMessagePromptTemplate,
     HumanMessagePromptTemplate,
+    MessagesPlaceholder,
 )
+from langchain.schema import BaseMessage, HumanMessage, AIMessage
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_community.chat_message_histories import ChatMessageHistory
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
+from datetime import datetime
 
 from config2 import load_config  
 
@@ -20,6 +26,15 @@ load_dotenv()
 os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
 
 llm_openai = ChatOpenAI(model="gpt-4o", temperature=0)
+
+# Global conversation history store
+conversation_history: Dict[str, BaseChatMessageHistory] = {}
+
+def get_conversation_history(session_id: str = "default") -> BaseChatMessageHistory:
+    """Get or create conversation history for a session"""
+    if session_id not in conversation_history:
+        conversation_history[session_id] = ChatMessageHistory()
+    return conversation_history[session_id]
 
 system_template = """
 You are a **PostgreSQL SQL AI assistant**. You generate SQL commands specifically for PostgreSQL database and EXECUTE them when requested.
@@ -64,6 +79,41 @@ chat_prompt = ChatPromptTemplate.from_messages([
 
 class State(TypedDict):
     messages: Annotated[list, add_messages]
+    conversation_history: List[BaseMessage]  # Store persistent conversation history
+    session_id: str  # Session identifier for tracking conversations
+
+
+def add_to_history(state: State, message: BaseMessage) -> None:
+    """Add a message to the conversation history"""
+    if "conversation_history" not in state:
+        state["conversation_history"] = []
+    state["conversation_history"].append(message)
+    
+    # Also add to global history for persistence
+    session_id = state.get("session_id", "default")
+    history = get_conversation_history(session_id)
+    history.add_message(message)
+
+
+def get_context_summary(state: State, max_messages: int = 10) -> str:
+    """Get a summary of recent conversation history for context"""
+    history = state.get("conversation_history", [])
+    if not history:
+        return ""
+    
+    # Get last N messages for context
+    recent_messages = history[-max_messages:]
+    context_parts = []
+    
+    for msg in recent_messages:
+        if isinstance(msg, HumanMessage):
+            context_parts.append(f"User: {msg.content}")
+        elif isinstance(msg, AIMessage):
+            # Skip tool calls in context, just show final responses
+            if not msg.tool_calls:
+                context_parts.append(f"Assistant: {msg.content}")
+    
+    return "\n".join(context_parts) if context_parts else ""
 
 
 def _get_config(target_db: Optional[str] = None) -> dict:
@@ -243,17 +293,12 @@ def update_rows(command: str, values_list: List[tuple]) -> str:
     """
     Update rows in a table.
     :param command: SQL command for updating rows.
-    :param values_list: List of values for parameterized queries (can be empty for complete SQL statements).
+    :param values_list: List of values for parameterized queries.
     :return: Success or error message.
     """
     try:
         with psycopg2.connect(**_get_config()) as conn, conn.cursor() as cur:
-            if values_list:
-                # Use executemany for parameterized queries
-                cur.executemany(command, values_list)
-            else:
-                # Use execute for complete SQL statements
-                cur.execute(command)
+            cur.executemany(command, values_list)
             conn.commit()
         return "Rows updated successfully."
     except Exception as e:
@@ -264,17 +309,12 @@ def delete_rows(command: str, values_list: List[tuple]) -> str:
     """
     Delete rows from a table.
     :param command: SQL command for deleting rows.
-    :param values_list: List of values for parameterized queries (can be empty for complete SQL statements).
+    :param values_list: List of values for parameterized queries.
     :return: Success or error message.
     """
     try:
         with psycopg2.connect(**_get_config()) as conn, conn.cursor() as cur:
-            if values_list:
-                # Use executemany for parameterized queries
-                cur.executemany(command, values_list)
-            else:
-                # Use execute for complete SQL statements
-                cur.execute(command)
+            cur.executemany(command, values_list)
             conn.commit()
         return "Rows deleted successfully."
     except Exception as e:
@@ -297,8 +337,27 @@ llm_openai_with_tools = llm_openai.bind_tools(tools)
 
 
 def sqlquerybot(state: State):
-    prompt = chat_prompt.format_prompt(input=state["messages"]).to_messages()
-    return {"messages": [llm_openai_with_tools.invoke(prompt)]}
+    # Get conversation context for better decision making
+    context = get_context_summary(state)
+    
+    # Prepare the input with context if available
+    current_input = state["messages"][-1].content if state["messages"] else ""
+    
+    # Add context to the prompt if available
+    if context:
+        enhanced_input = f"Previous conversation context:\n{context}\n\nCurrent request: {current_input}"
+        # Replace the last message with the enhanced version
+        messages = state["messages"][:-1] + [HumanMessage(content=enhanced_input)]
+    else:
+        messages = state["messages"]
+    
+    prompt = chat_prompt.format_prompt(input=messages).to_messages()
+    response = llm_openai_with_tools.invoke(prompt)
+    
+    # Add the response to conversation history
+    add_to_history(state, response)
+    
+    return {"messages": [response]}
 
 
 def should_continue(state: State) -> str:
@@ -346,9 +405,14 @@ agent = graph.compile()
 
 
 if __name__ == "__main__":
-    print("🤖 SQL AI Assistant")
+    print("🤖 SQL AI Assistant with History Management")
     print("Type 'exit', 'quit', or 'bye' to end the conversation")
+    print("Type 'new_session' to start a new conversation session")
     print("=" * 50)
+    
+    # Initialize session
+    session_id = str(uuid.uuid4())[:8]  # Short session ID
+    print(f"📝 Session ID: {session_id}")
     
     while True:
         try:
@@ -360,15 +424,32 @@ if __name__ == "__main__":
                 print("\n🤖 Assistant: Goodbye! Have a great day!")
                 break
             
+            # Check for new session command
+            if user_input.lower() == 'new_session':
+                session_id = str(uuid.uuid4())[:8]
+                print(f"📝 New Session ID: {session_id}")
+                print("🔄 Starting fresh conversation...")
+                continue
+            
             # Skip empty inputs
             if not user_input:
                 continue
             
-            # Process the user's message
+            # Process the user's message with session context
             print("\n🤖 Assistant: Processing your request...")
-            response = agent.invoke({
-                "messages": user_input
-            })
+            
+            # Initialize state with session information
+            initial_state = {
+                "messages": user_input,
+                "session_id": session_id,
+                "conversation_history": []
+            }
+            
+            # Add user message to history
+            user_message = HumanMessage(content=user_input)
+            add_to_history(initial_state, user_message)
+            
+            response = agent.invoke(initial_state)
             
             # Display the response
             print("\n" + "=" * 50)
